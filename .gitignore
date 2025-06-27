@@ -1,0 +1,28 @@
+# WinDivert library (external dependency from https://github.com/basil00/WinDivert)
+WinDivert-2.2.2-A/
+
+# Build outputs
+*.exe
+*.obj
+*.pdb
+*.ilk
+
+# WinDivert files (copied to root for convenience)
+WinDivert.dll
+WinDivert.lib
+WinDivert64.sys
+windivert.h
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE files
+.vs/
+.vscode/
+*.user
+
+# Temporary files
+*.tmp
+*.log 
