@@ -181,6 +181,10 @@ BOOL ProcessPacket(UINT8* packet, UINT packet_len, WINDIVERT_ADDRESS* addr, UINT
         PrintHexDump(payload, payload_len, "");
         printf("PRP trailer: ");
         PrintHexDump(payload + payload_len - PRP_TRAILER_LENGTH, PRP_TRAILER_LENGTH, "");
+
+        // --- DIAGNOSTIC LOG ADDED ---
+        printf("[DEBUG] VERIFY TRAILER CONTENT: ");
+        PrintHexDump(payload + payload_len - PRP_TRAILER_LENGTH, PRP_TRAILER_LENGTH, "");
     }
     
     // Remove the trailer by reducing the payload length (use size_t for x64 consistency)
