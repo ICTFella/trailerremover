@@ -154,7 +154,8 @@ BOOL ProcessPacket(UINT8* packet, UINT packet_len, WINDIVERT_ADDRESS* addr, UINT
         return FALSE;
     }
     
-    // Check if the packet ends with the PRP suffix.
+    // Check only for the PRP suffix. Per user request, no payload length check is performed.
+    // It is assumed that any packet with this suffix will have a payload of at least 6 bytes.
     if (!EndsWithPRPSuffix(payload, payload_len)) {
         if (debug_enabled) {
             sprintf_s(debug_msg, sizeof(debug_msg), "No PRP suffix found (PayloadLen=%u)", payload_len);
@@ -164,24 +165,12 @@ BOOL ProcessPacket(UINT8* packet, UINT packet_len, WINDIVERT_ADDRESS* addr, UINT
         return FALSE;
     }
 
-    // Suffix detected. Now check if payload is long enough to strip the full trailer.
-    // We only strip if we can remove exactly 6 bytes.
-    if (payload_len < PRP_TRAILER_LENGTH) {
-        if (debug_enabled) {
-            sprintf_s(debug_msg, sizeof(debug_msg), 
-                "PRP suffix found, but payload is too short to strip 6 bytes (PayloadLen=%u). Packet ignored.", payload_len);
-            LogDebug(debug_msg, debug_enabled);
-        }
-        *new_packet_len = packet_len;
-        return FALSE;
-    }
-
-    // A PRP trailer is detected and is long enough. The number of bytes to strip is fixed.
+    // A PRP trailer is detected. The number of bytes to strip is fixed at 6.
     const size_t bytes_to_strip = PRP_TRAILER_LENGTH;
 
     // Log packet details
     char info_msg[256];
-    sprintf_s(info_msg, sizeof(info_msg), "PRP trailer/suffix detected on packet to %u.%u.%u.%u:%u. Stripping %zu bytes.",
+    sprintf_s(info_msg, sizeof(info_msg), "PRP trailer detected on packet to %u.%u.%u.%u:%u. Stripping %zu bytes.",
             (unsigned int)(ip_header->DstAddr & 0xFF),
             (unsigned int)((ip_header->DstAddr >> 8) & 0xFF),
             (unsigned int)((ip_header->DstAddr >> 16) & 0xFF),
