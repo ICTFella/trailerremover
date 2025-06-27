@@ -125,50 +125,56 @@ BOOL EndsWithPRPSuffix(const UINT8* data, size_t len) {
 BOOL ProcessPacket(UINT8* packet, UINT packet_len, WINDIVERT_ADDRESS* addr, UINT* new_packet_len, BOOL debug_enabled) {
     PWINDIVERT_IPHDR ip_header = NULL;
     PWINDIVERT_TCPHDR tcp_header = NULL;
-    UINT8* payload = NULL;
-    UINT payload_len = 0;
     char debug_msg[256];
     
-    // Parse the packet
+    *new_packet_len = packet_len;
+
+    // Parse packet to get IP and TCP headers
     if (!WinDivertHelperParsePacket(packet, packet_len, &ip_header, NULL, NULL, NULL, 
-                                   NULL, &tcp_header, NULL, &payload, &payload_len, NULL, NULL)) {
-        LogDebug("Failed to parse packet", debug_enabled);
-        *new_packet_len = packet_len;
+                                   NULL, &tcp_header, NULL, NULL, NULL, NULL, NULL)) {
+        LogDebug("Failed to parse packet headers.", debug_enabled);
         return FALSE;
     }
-    
-    // Check if it's a TCP packet with payload
-    if (!tcp_header || !payload || payload_len == 0) {
-        LogDebug("Not a TCP packet with payload", debug_enabled);
-        *new_packet_len = packet_len;
+
+    // We must have IP and TCP headers to proceed
+    if (ip_header == NULL || tcp_header == NULL) {
+        LogDebug("Not a TCP/IP packet, ignoring.", debug_enabled);
         return FALSE;
     }
-    
-    // Check if source port is 102
+
+    // Check if source port is 102 (redundant with filter, but safe)
     if (ntohs(tcp_header->SrcPort) != 102) {
-        if (debug_enabled) {
-            sprintf_s(debug_msg, sizeof(debug_msg), "Source port is not 102: %u", (unsigned int)ntohs(tcp_header->SrcPort));
-            LogDebug(debug_msg, debug_enabled);
-        }
-        *new_packet_len = packet_len;
-        return FALSE;
-    }
-    
-    // Check only for the PRP suffix. Per user request, no payload length check is performed.
-    // It is assumed that any packet with this suffix will have a payload of at least 6 bytes.
-    if (!EndsWithPRPSuffix(payload, payload_len)) {
-        if (debug_enabled) {
-            sprintf_s(debug_msg, sizeof(debug_msg), "No PRP suffix found (PayloadLen=%u)", payload_len);
-            LogDebug(debug_msg, debug_enabled);
-        }
-        *new_packet_len = packet_len;
         return FALSE;
     }
 
-    // A PRP trailer is detected. The number of bytes to strip is fixed at 6.
-    const size_t bytes_to_strip = PRP_TRAILER_LENGTH;
+    // The key logic: Check if the actual packet length from WinDivert
+    // is greater than the official length in the IP header.
+    UINT official_ip_len = ntohs(ip_header->Length);
+    if (packet_len <= official_ip_len) {
+        // No extra data found, so no trailer to remove.
+        if (debug_enabled) {
+            sprintf_s(debug_msg, sizeof(debug_msg), "No trailer detected (RecvLen=%u, IPLen=%u).", packet_len, official_ip_len);
+            LogDebug(debug_msg, debug_enabled);
+        }
+        return FALSE;
+    }
 
-    // Log packet details
+    // Trailer detected. Check if it has the correct suffix.
+    // The suffix is at the very end of the received buffer.
+    if (!EndsWithPRPSuffix(packet, packet_len)) {
+        if (debug_enabled) {
+            sprintf_s(debug_msg, sizeof(debug_msg), "Trailer detected, but no PRP suffix found (RecvLen=%u, IPLen=%u).", packet_len, official_ip_len);
+            LogDebug(debug_msg, debug_enabled);
+            PrintHexDump(packet + official_ip_len, packet_len - official_ip_len, "[DEBUG] Trailer Content: ");
+        }
+        return FALSE;
+    }
+
+    // Valid PRP trailer found. We will strip everything after the official IP packet length.
+    size_t trailer_len = packet_len - official_ip_len;
+    *new_packet_len = official_ip_len;
+
+    // Log what we found and what we're doing
     char info_msg[256];
     sprintf_s(info_msg, sizeof(info_msg), "PRP trailer detected on packet to %u.%u.%u.%u:%u. Stripping %zu bytes.",
             (unsigned int)(ip_header->DstAddr & 0xFF),
@@ -176,75 +182,19 @@ BOOL ProcessPacket(UINT8* packet, UINT packet_len, WINDIVERT_ADDRESS* addr, UINT
             (unsigned int)((ip_header->DstAddr >> 16) & 0xFF),
             (unsigned int)((ip_header->DstAddr >> 24) & 0xFF),
             (unsigned int)ntohs(tcp_header->DstPort),
-            bytes_to_strip);
+            trailer_len);
     LogInfo(info_msg);
-    
-    if (debug_enabled) {
-        sprintf_s(debug_msg, sizeof(debug_msg), "Original payload (%u bytes):", payload_len);
-        printf("%s ", debug_msg);
-        PrintHexDump(payload, payload_len, "");
-        printf("PRP trailer: ");
-        PrintHexDump(payload + payload_len - bytes_to_strip, bytes_to_strip, "");
 
-        // --- DIAGNOSTIC LOG ADDED ---
-        printf("[DEBUG] VERIFY TRAILER CONTENT: ");
-        fflush(stdout); // Force immediate output before potential crash/stall
-        PrintHexDump(payload + payload_len - bytes_to_strip, bytes_to_strip, "");
-    }
-    
-    // Remove the trailer by reducing the payload length (use size_t for x64 consistency)
-    size_t new_payload_len = (size_t)payload_len - bytes_to_strip;
-    
-    // Calculate header length using proper x64 types
-    size_t header_len = (size_t)(payload - packet);
-    
-    // Validate header length is reasonable
-    if (header_len > (size_t)packet_len) {
-        LogError("Invalid header length detected, packet corrupted");
-        *new_packet_len = packet_len;
-        return FALSE;
-    }
-    
-    // Calculate new packet length (header + reduced payload) - all size_t for x64
-    size_t new_packet_len_64 = header_len + new_payload_len;
-    
-    // Validate final packet length fits in UINT (WinDivert API requirement)
-    if (new_packet_len_64 > UINT_MAX) {
-        LogError("Packet too large after processing");
-        *new_packet_len = packet_len;
-        return FALSE;
-    }
-    
-    *new_packet_len = (UINT)new_packet_len_64;
-    
-    // Update IP header length
-    if (ip_header) {
-        // Validate IP header length fits in u_short
-        if (new_packet_len_64 > USHRT_MAX) {
-            LogError("Packet too large for IP header length field");
-            *new_packet_len = packet_len;
-            return FALSE;
-        }
-        ip_header->Length = htons((u_short)new_packet_len_64);
-    }
-    
-    // Recalculate checksums
-    WinDivertHelperCalcChecksums(packet, *new_packet_len, addr, 0);
-    
-    sprintf_s(info_msg, sizeof(info_msg), "PRP trailer stripped from packet %u.%u.%u.%u:%u",
-            (unsigned int)(ip_header->DstAddr & 0xFF),
-            (unsigned int)((ip_header->DstAddr >> 8) & 0xFF),
-            (unsigned int)((ip_header->DstAddr >> 16) & 0xFF),
-            (unsigned int)((ip_header->DstAddr >> 24) & 0xFF),
-            (unsigned int)ntohs(tcp_header->DstPort));
-    LogInfo(info_msg);
-    
     if (debug_enabled) {
-        sprintf_s(debug_msg, sizeof(debug_msg), "New payload (%zu bytes):", new_payload_len);
-        printf("%s ", debug_msg);
-        PrintHexDump(payload, new_payload_len, "");
+        PrintHexDump(packet + official_ip_len, trailer_len, "[DEBUG] Stripped Trailer: ");
     }
-    
+
+    // The IP header length is already correct, so we only need to recalculate
+    // the TCP checksum over the now-shorter packet.
+    // WinDivert handles this automatically if checksums are not disabled.
+    // However, we call it explicitly for clarity and correctness.
+    WinDivertHelperCalcChecksums(packet, *new_packet_len, addr, 0);
+
     return TRUE;
 }
 
@@ -269,8 +219,8 @@ int main(int argc, char* argv[]) {
         LogError("Could not set console control handler");
     }
     
-    // WinDivert filter: inbound TCP packets from port 102 with payload
-    const char* filter = "inbound and tcp.SrcPort == 102 and tcp.PayloadLength > 0";
+    // WinDivert filter: inbound TCP packets from port 102
+    const char* filter = "inbound and tcp.SrcPort == 102";
     char info_msg[256];
     sprintf_s(info_msg, sizeof(info_msg), "Using filter: %s", filter);
     LogInfo(info_msg);
