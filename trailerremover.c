@@ -18,6 +18,7 @@
 #include <signal.h>
 #include <time.h>
 #include <string.h>
+#include <limits.h>
 
 // Include WinDivert header
 #include "windivert.h"
@@ -182,23 +183,40 @@ BOOL ProcessPacket(UINT8* packet, UINT packet_len, WINDIVERT_ADDRESS* addr, UINT
         PrintHexDump(payload + payload_len - PRP_TRAILER_LENGTH, PRP_TRAILER_LENGTH, "");
     }
     
-    // Remove the trailer by reducing the payload length
-    UINT new_payload_len = payload_len - PRP_TRAILER_LENGTH;
-    UINT header_len = (UINT)(payload - packet);
+    // Remove the trailer by reducing the payload length (use size_t for x64 consistency)
+    size_t new_payload_len = (size_t)payload_len - PRP_TRAILER_LENGTH;
     
-    // Validate header length to prevent buffer overflow
-    if (header_len > packet_len) {
+    // Calculate header length using proper x64 types
+    size_t header_len = (size_t)(payload - packet);
+    
+    // Validate header length is reasonable
+    if (header_len > (size_t)packet_len) {
         LogError("Invalid header length detected, packet corrupted");
         *new_packet_len = packet_len;
         return FALSE;
     }
     
-    // Calculate new packet length
-    *new_packet_len = header_len + new_payload_len;
+    // Calculate new packet length (header + reduced payload) - all size_t for x64
+    size_t new_packet_len_64 = header_len + new_payload_len;
+    
+    // Validate final packet length fits in UINT (WinDivert API requirement)
+    if (new_packet_len_64 > UINT_MAX) {
+        LogError("Packet too large after processing");
+        *new_packet_len = packet_len;
+        return FALSE;
+    }
+    
+    *new_packet_len = (UINT)new_packet_len_64;
     
     // Update IP header length
     if (ip_header) {
-        ip_header->Length = htons((u_short)*new_packet_len);
+        // Validate IP header length fits in u_short
+        if (new_packet_len_64 > USHRT_MAX) {
+            LogError("Packet too large for IP header length field");
+            *new_packet_len = packet_len;
+            return FALSE;
+        }
+        ip_header->Length = htons((u_short)new_packet_len_64);
     }
     
     // Recalculate checksums
@@ -213,7 +231,7 @@ BOOL ProcessPacket(UINT8* packet, UINT packet_len, WINDIVERT_ADDRESS* addr, UINT
     LogInfo(info_msg);
     
     if (debug_enabled) {
-        sprintf_s(debug_msg, sizeof(debug_msg), "New payload (%u bytes):", new_payload_len);
+        sprintf_s(debug_msg, sizeof(debug_msg), "New payload (%zu bytes):", new_payload_len);
         printf("%s ", debug_msg);
         PrintHexDump(payload, new_payload_len, "");
     }
