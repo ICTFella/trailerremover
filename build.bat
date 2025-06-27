@@ -5,7 +5,7 @@ REM Check if Visual Studio compiler is available
 where cl >nul 2>&1
 if %ERRORLEVEL% == 0 (
     echo Using Visual Studio compiler...
-    cl /O2 /W4 /WX trailerremover.c windivert.lib ws2_32.lib /Fe:trailerremover.exe
+    cl /O2 /W4 /WX /MT trailerremover.c windivert.lib ws2_32.lib /Fe:trailerremover.exe
     if %ERRORLEVEL% == 0 (
         echo Build successful! trailerremover.exe created.
         echo Copy windivert.dll to the same directory to run.
